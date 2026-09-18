@@ -131,7 +131,7 @@ int main(void)
     MX_SubGHz_Phy_Process();
 
     /* USER CODE BEGIN 3 */
-    printf("\r\nHello World 2");
+//    printf("\r\nHello World 2");
   }
   /* USER CODE END 3 */
 }
