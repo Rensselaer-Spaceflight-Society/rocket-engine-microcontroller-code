@@ -6,65 +6,107 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
+  * <h2><center>&copy; Copyright (c) 2021 STMicroelectronics.
+  * All rights reserved.</center></h2>
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * This software component is licensed by ST under BSD 3-Clause license,
+  * the "License"; You may not use this file except in compliance with the
+  * License. You may obtain a copy of the License at:
+  *                        opensource.org/licenses/BSD-3-Clause
   *
   ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "app_subghz_phy.h"
+#include "subghz.h"
+#include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+#include <string.h>
+#include <stdio.h>
+#include "radio_driver.h"
+#include "stm32wlxx_nucleo.h"
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+typedef enum
+{
+  STATE_NULL,
+  STATE_MASTER,
+  STATE_SLAVE
+} state_t;
+
+typedef enum
+{
+  SSTATE_NULL,
+  SSTATE_RX,
+  SSTATE_TX
+} substate_t;
+
+typedef struct
+{
+  state_t state;
+  substate_t subState;
+  uint32_t rxTimeout;
+  uint32_t rxMargin;
+  uint32_t randomDelay;
+  char rxBuffer[RX_BUFFER_SIZE];
+  uint8_t rxSize;
+} pingPongFSM_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
+#define RF_FREQUENCY                                915000000 /* Hz */
+#define TX_OUTPUT_POWER                             14        /* dBm */
+#define FSK_FDEV                                    25000     /* Hz */
+#define FSK_DATARATE                                50000     /* bps */
+#define FSK_BANDWIDTH                               50000     /* Hz */
+#define FSK_PREAMBLE_LENGTH                         5         /* Same for Tx and Rx */
+#define FSK_SYNCWORD_LENGTH                         3
+//#define FSK_FIX_LENGTH_PAYLOAD_ON                   false
+//#define PAYLOAD_LEN                                 64
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 
-COM_InitTypeDef BspCOMInit;
-I2C_HandleTypeDef hi2c1;
-
-SPI_HandleTypeDef hspi1;
-
-SUBGHZ_HandleTypeDef hsubghz;
-
-TIM_HandleTypeDef htim2;
-
-UART_HandleTypeDef huart1;
-
 /* USER CODE BEGIN PV */
+
+void (*volatile eventReceptor)(pingPongFSM_t *const fsm);
+PacketParams_t packetParams;  // TODO: this is lazy...
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_I2C1_Init(void);
-static void MX_SPI1_Init(void);
-static void MX_TIM2_Init(void);
-static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
+
+void radioInit(void);
+void RadioOnDioIrq(RadioIrqMasks_t radioIrq);
+void eventTxDone(pingPongFSM_t *const fsm);
+void eventRxDone(pingPongFSM_t *const fsm);
+void eventTxTimeout(pingPongFSM_t *const fsm);
+void eventRxTimeout(pingPongFSM_t *const fsm);
+void eventRxError(pingPongFSM_t *const fsm);
+void enterMasterRx(pingPongFSM_t *const fsm);
+void enterSlaveRx(pingPongFSM_t *const fsm);
+void enterMasterTx(pingPongFSM_t *const fsm);
+void enterSlaveTx(pingPongFSM_t *const fsm);
+void transitionRxDone(pingPongFSM_t *const fsm);
 
 /* USER CODE END PFP */
 
@@ -79,8 +121,10 @@ static void MX_USART1_UART_Init(void);
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
+
+  pingPongFSM_t fsm;
+  char uartBuff[100];
 
   /* USER CODE END 1 */
 
@@ -98,40 +142,108 @@ int main(void)
 
   /* USER CODE BEGIN SysInit */
 
+  /*** GPIO Configuration (for debugging) ***/
+  /* DEBUG_SUBGHZSPI_NSSOUT = PA4
+   * DEBUG_SUBGHZSPI_SCKOUT = PA5
+   * DEBUG_SUBGHZSPI_MISOOUT = PA6
+   * DEBUG_SUBGHZSPI_MOSIOUT = PA7
+   * DEBUG_RF_HSE32RDY = PA10
+   * DEBUG_RF_NRESET = PA11
+   * DEBUG_RF_SMPSRDY = PB2
+   * DEBUG_RF_DTB1 = PB3 <---- Conflicts with RF_IRQ0
+   * DEBUG_RF_LDORDY = PB4
+   * RF_BUSY = PA12
+   * RF_IRQ0 = PB3
+   * RF_IRQ1 = PB5
+   * RF_IRQ2 = PB8
+   */
+
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  // Enable GPIO Clocks
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  // DEBUG_SUBGHZSPI_{NSSOUT, SCKOUT, MSIOOUT, MOSIOUT} pins
+  GPIO_InitStruct.Pin = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF13_DEBUG_SUBGHZSPI;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // DEBUG_RF_{HSE32RDY, NRESET} pins
+  GPIO_InitStruct.Pin = GPIO_PIN_10 | GPIO_PIN_11;
+  GPIO_InitStruct.Alternate = GPIO_AF13_DEBUG_RF;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // DEBUG_RF_{SMPSRDY, LDORDY} pins
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_4;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  // RF_BUSY pin
+  GPIO_InitStruct.Pin = GPIO_PIN_12;
+  GPIO_InitStruct.Alternate = GPIO_AF6_RF_BUSY;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // RF_{IRQ0, IRQ1, IRQ2} pins
+  GPIO_InitStruct.Pin = GPIO_PIN_3 | GPIO_PIN_5 | GPIO_PIN_8;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_I2C1_Init();
-  MX_SPI1_Init();
-  MX_TIM2_Init();
-  MX_USART1_UART_Init();
-  MX_SubGHz_Phy_Init();
+  MX_USART2_UART_Init();
+  MX_SUBGHZ_Init();
   /* USER CODE BEGIN 2 */
+
+  BSP_LED_Init(LED_GREEN);
+  BSP_LED_Init(LED_RED);
+
+  strcpy(uartBuff, "\n\rPING PONG\r\nAPP_VERSION=0.0.2\r\n---------------\r\n");
+  HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
+  sprintf(uartBuff, "FSK_MODULATION\r\nFSK_BW=%d Hz\r\nFSK_DR=%d bits/s\r\n", FSK_BANDWIDTH, FSK_DATARATE);
+  HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
+  radioInit();
 
   /* USER CODE END 2 */
 
-  /* Initialize COM1 port (115200, 8 bits (7-bit data + 1 stop bit), no parity */
-  BspCOMInit.BaudRate   = 115200;
-  BspCOMInit.WordLength = COM_WORDLENGTH_8B;
-  BspCOMInit.StopBits   = COM_STOPBITS_1;
-  BspCOMInit.Parity     = COM_PARITY_NONE;
-  BspCOMInit.HwFlowCtl  = COM_HWCONTROL_NONE;
-  if (BSP_COM_Init(COM1, &BspCOMInit) != BSP_ERROR_NONE)
-  {
-    Error_Handler();
-  }
-
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+  // get random number
+  uint32_t rnd = 0;
+  SUBGRF_SetDioIrqParams(IRQ_RADIO_NONE, IRQ_RADIO_NONE, IRQ_RADIO_NONE, IRQ_RADIO_NONE);
+  rnd = SUBGRF_GetRandom();
+
+  fsm.state = STATE_NULL;
+  fsm.subState = SSTATE_NULL;
+  fsm.rxTimeout = 3000; // 3000 ms
+  fsm.rxMargin = 200;   // 200 ms
+  fsm.randomDelay = rnd >> 22; // [0, 1023] ms
+  sprintf(uartBuff, "rand=%lu\r\n", fsm.randomDelay);
+  HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
+
+  HAL_Delay(fsm.randomDelay);
+  SUBGRF_SetDioIrqParams( IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                          IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                          IRQ_RADIO_NONE,
+                          IRQ_RADIO_NONE );
+  SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
+  SUBGRF_SetRx(fsm.rxTimeout << 6);
+  fsm.state = STATE_MASTER;
+  fsm.subState = SSTATE_RX;
+
   while (1)
   {
-
     /* USER CODE END WHILE */
-    MX_SubGHz_Phy_Process();
 
     /* USER CODE BEGIN 3 */
-//    printf("\r\nHello World 2");
+
+    eventReceptor = NULL;
+    while (eventReceptor == NULL);
+    eventReceptor(&fsm);
   }
   /* USER CODE END 3 */
 }
@@ -145,22 +257,25 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
+  /** Configure LSE Drive Capability
+  */
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
-
-  /** Initializes the CPU, AHB and APB buses clocks
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  /** Initializes the CPU, AHB and APB busses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_11;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
-
   /** Configure the SYSCLKSource, HCLK, PCLK1 and PCLK2 clocks dividers
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3|RCC_CLOCKTYPE_HCLK
@@ -172,323 +287,419 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00100D14;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Analogue filter
-  */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Digital filter
-  */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
-}
-
-/**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
-  * @brief SUBGHZ Initialization Function
-  * @param None
-  * @retval None
-  */
-void MX_SUBGHZ_Init(void)
-{
-
-  /* USER CODE BEGIN SUBGHZ_Init 0 */
-
-  /* USER CODE END SUBGHZ_Init 0 */
-
-  /* USER CODE BEGIN SUBGHZ_Init 1 */
-
-  /* USER CODE END SUBGHZ_Init 1 */
-  hsubghz.Init.BaudratePrescaler = SUBGHZSPI_BAUDRATEPRESCALER_8;
-  if (HAL_SUBGHZ_Init(&hsubghz) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SUBGHZ_Init 2 */
-
-  /* USER CODE END SUBGHZ_Init 2 */
-
-}
-
-/**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM2_Init(void)
-{
-
-  /* USER CODE BEGIN TIM2_Init 0 */
-
-  /* USER CODE END TIM2_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM2_Init 1 */
-
-  /* USER CODE END TIM2_Init 1 */
-  htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
-  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
-  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM2_Init 2 */
-
-  /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
-
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-  /* USER CODE END MX_GPIO_Init_1 */
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, FE_CTRL3_Pin|GPIO_PIN_5|FE_CTRL1_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : PA12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF6_RF_BUSY;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF13_DEBUG_RF;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_14;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : FE_CTRL3_Pin FE_CTRL1_Pin */
-  GPIO_InitStruct.Pin = FE_CTRL3_Pin|FE_CTRL1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB13 PB12 PB1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_12|GPIO_PIN_1;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PC5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief  Initialize the Sub-GHz radio and dependent hardware.
+  * @retval None
+  */
+void radioInit(void)
+{
+  // Initialize the hardware (SPI bus, TCXO control, RF switch)
+  SUBGRF_Init(RadioOnDioIrq);
+
+  // Use DCDC converter if `DCDC_ENABLE` is defined in radio_conf.h
+  // "By default, the SMPS clock detection is disabled and must be enabled before enabling the SMPS." (6.1 in RM0453)
+  SUBGRF_WriteRegister(SUBGHZ_SMPSC0R, (SUBGRF_ReadRegister(SUBGHZ_SMPSC0R) | SMPS_CLK_DET_ENABLE));
+  SUBGRF_SetRegulatorMode();
+
+  // Use the whole 256-byte buffer for both TX and RX
+  SUBGRF_SetBufferBaseAddress(0x00, 0x00);
+
+  SUBGRF_SetRfFrequency(RF_FREQUENCY);
+  SUBGRF_SetRfTxPower(TX_OUTPUT_POWER);
+  SUBGRF_SetStopRxTimerOnPreambleDetect(false);
+
+  SUBGRF_SetPacketType(PACKET_TYPE_GFSK);
+
+  ModulationParams_t modulationParams;
+  modulationParams.PacketType = PACKET_TYPE_GFSK;
+  modulationParams.Params.Gfsk.Bandwidth = SUBGRF_GetFskBandwidthRegValue(FSK_BANDWIDTH);
+  modulationParams.Params.Gfsk.BitRate = FSK_DATARATE;
+  modulationParams.Params.Gfsk.Fdev = FSK_FDEV;
+  modulationParams.Params.Gfsk.ModulationShaping = MOD_SHAPING_G_BT_1;
+  SUBGRF_SetModulationParams(&modulationParams);
+
+  packetParams.PacketType = PACKET_TYPE_GFSK;
+  packetParams.Params.Gfsk.AddrComp = RADIO_ADDRESSCOMP_FILT_OFF;
+  packetParams.Params.Gfsk.CrcLength = RADIO_CRC_2_BYTES_CCIT;
+  packetParams.Params.Gfsk.DcFree = RADIO_DC_FREEWHITENING;
+  packetParams.Params.Gfsk.HeaderType = RADIO_PACKET_VARIABLE_LENGTH;
+  packetParams.Params.Gfsk.PayloadLength = 0xFF;
+  packetParams.Params.Gfsk.PreambleLength = (FSK_PREAMBLE_LENGTH << 3); // bytes to bits
+  packetParams.Params.Gfsk.PreambleMinDetect = RADIO_PREAMBLE_DETECTOR_08_BITS;
+  packetParams.Params.Gfsk.SyncWordLength = (FSK_SYNCWORD_LENGTH << 3); // bytes to bits
+  SUBGRF_SetPacketParams(&packetParams);
+
+  SUBGRF_SetSyncWord((uint8_t[]){0xC1, 0x94, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00});
+  SUBGRF_SetWhiteningSeed(0x01FF);
+}
+
+
+/**
+  * @brief  Receive data trough SUBGHZSPI peripheral
+  * @param  radioIrq  interrupt pending status information
+  * @retval None
+  */
+void RadioOnDioIrq(RadioIrqMasks_t radioIrq)
+{
+  switch (radioIrq)
+  {
+    case IRQ_TX_DONE:
+      eventReceptor = eventTxDone;
+      break;
+    case IRQ_RX_DONE:
+      eventReceptor = eventRxDone;
+      break;
+    case IRQ_RX_TX_TIMEOUT:
+      if (SUBGRF_GetOperatingMode() == MODE_TX)
+      {
+        eventReceptor = eventTxTimeout;
+      }
+      else if (SUBGRF_GetOperatingMode() == MODE_RX)
+      {
+        eventReceptor = eventRxTimeout;
+      }
+      break;
+    case IRQ_CRC_ERROR:
+      eventReceptor = eventRxError;
+      break;
+    default:
+      break;
+  }
+}
+
+
+/**
+  * @brief  Process the TX Done event
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void eventTxDone(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Event TX Done\r\n", 15, HAL_MAX_DELAY);
+  switch (fsm->state)
+  {
+    case STATE_MASTER:
+      switch (fsm->subState)
+      {
+        case SSTATE_TX:
+          enterMasterRx(fsm);
+          fsm->subState = SSTATE_RX;
+          break;
+        default:
+          break;
+      }
+      break;
+    case STATE_SLAVE:
+      switch (fsm->subState)
+      {
+        case SSTATE_TX:
+          enterSlaveRx(fsm);
+          fsm->subState = SSTATE_RX;
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+
+/**
+  * @brief  Process the RX Done event
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void eventRxDone(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Event RX Done\r\n", 15, HAL_MAX_DELAY);
+  switch(fsm->state)
+  {
+    case STATE_MASTER:
+      switch (fsm->subState)
+      {
+        case SSTATE_RX:
+          transitionRxDone(fsm);
+          if (strncmp(fsm->rxBuffer, "PONG", 4) == 0)
+          {
+            BSP_LED_Off(LED_GREEN);
+            BSP_LED_Toggle(LED_RED);
+            enterMasterTx(fsm);
+            fsm->subState = SSTATE_TX;
+          }
+          else if (strncmp(fsm->rxBuffer, "PING", 4) == 0)
+          {
+            enterSlaveRx(fsm);
+            fsm->state = STATE_SLAVE;
+          }
+          else
+          {
+            enterMasterRx(fsm);
+          }
+          break;
+        default:
+          break;
+      }
+      break;
+    case STATE_SLAVE:
+      switch (fsm->subState)
+      {
+        case SSTATE_RX:
+          transitionRxDone(fsm);
+          if (strncmp(fsm->rxBuffer, "PING", 4) == 0)
+          {
+            BSP_LED_Off(LED_RED);
+            BSP_LED_Toggle(LED_GREEN);
+            enterSlaveTx(fsm);
+            fsm->subState = SSTATE_TX;
+          }
+          else
+          {
+            enterMasterRx(fsm);
+            fsm->state = STATE_MASTER;
+          }
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+
+/**
+  * @brief  Process the TX Timeout event
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void eventTxTimeout(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Event TX Timeout\r\n", 18, HAL_MAX_DELAY);
+  switch (fsm->state)
+  {
+    case STATE_MASTER:
+      switch (fsm->subState)
+      {
+        case SSTATE_TX:
+          enterMasterRx(fsm);
+          fsm->subState = SSTATE_RX;
+          break;
+        default:
+          break;
+      }
+      break;
+    case STATE_SLAVE:
+      switch (fsm->subState)
+      {
+        case SSTATE_TX:
+          enterSlaveRx(fsm);
+          fsm->subState = SSTATE_RX;
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+
+/**
+  * @brief  Process the RX Timeout event
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void eventRxTimeout(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Event RX Timeout\r\n", 18, HAL_MAX_DELAY);
+  switch (fsm->state)
+  {
+    case STATE_MASTER:
+      switch (fsm->subState)
+      {
+        case SSTATE_RX:
+          HAL_Delay(fsm->randomDelay);
+          enterMasterTx(fsm);
+          fsm->subState = SSTATE_TX;
+          break;
+        default:
+          break;
+      }
+      break;
+    case STATE_SLAVE:
+      switch (fsm->subState)
+      {
+        case SSTATE_RX:
+          enterSlaveRx(fsm);
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+
+/**
+  * @brief  Process the RX Error event
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void eventRxError(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Event Rx Error\r\n", 16, HAL_MAX_DELAY);
+  switch (fsm->state)
+  {
+    case STATE_MASTER:
+      switch (fsm->subState)
+      {
+        case SSTATE_RX:
+          HAL_Delay(fsm->randomDelay);
+          enterMasterTx(fsm);
+          fsm->subState = SSTATE_TX;
+          break;
+        default:
+          break;
+      }
+      break;
+    case STATE_SLAVE:
+      switch (fsm->subState)
+      {
+        case SSTATE_RX:
+          enterSlaveRx(fsm);
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+
+/**
+  * @brief  Entry actions for the RX sub-state of the Master state
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void enterMasterRx(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Master Rx start\r\n", 17, HAL_MAX_DELAY);
+  SUBGRF_SetDioIrqParams( IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                          IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                          IRQ_RADIO_NONE,
+                          IRQ_RADIO_NONE );
+  SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
+  packetParams.Params.Gfsk.PayloadLength = 0xFF;
+  SUBGRF_SetPacketParams(&packetParams);
+  SUBGRF_SetRx(fsm->rxTimeout << 6);
+}
+
+
+/**
+  * @brief  Entry actions for the RX sub-state of the Slave state
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void enterSlaveRx(pingPongFSM_t *const fsm)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Slave Rx start\r\n", 16, HAL_MAX_DELAY);
+  SUBGRF_SetDioIrqParams( IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                          IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                          IRQ_RADIO_NONE,
+                          IRQ_RADIO_NONE );
+  SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
+  packetParams.Params.Gfsk.PayloadLength = 0xFF;
+  SUBGRF_SetPacketParams(&packetParams);
+  SUBGRF_SetRx(fsm->rxTimeout << 6);
+}
+
+
+/**
+  * @brief  Entry actions for the TX sub-state of the Master state
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void enterMasterTx(pingPongFSM_t *const fsm)
+{
+  HAL_Delay(fsm->rxMargin);
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"...PING\r\n", 9, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Master Tx start\r\n", 17, HAL_MAX_DELAY);
+  SUBGRF_SetDioIrqParams( IRQ_TX_DONE | IRQ_RX_TX_TIMEOUT,
+                          IRQ_TX_DONE | IRQ_RX_TX_TIMEOUT,
+                          IRQ_RADIO_NONE,
+                          IRQ_RADIO_NONE );
+  SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
+  // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
+  SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
+  packetParams.Params.Gfsk.PayloadLength = 0x4;
+  SUBGRF_SetPacketParams(&packetParams);
+  SUBGRF_SendPayload((uint8_t *)"PING", 4, 0);
+}
+
+
+/**
+  * @brief  Entry actions for the TX sub-state of the Slave state
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void enterSlaveTx(pingPongFSM_t *const fsm)
+{
+  HAL_Delay(fsm->rxMargin);
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"...PONG\r\n", 9, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&huart2, (uint8_t *)"Slave Tx start\r\n", 16, HAL_MAX_DELAY);
+  SUBGRF_SetDioIrqParams( IRQ_TX_DONE | IRQ_RX_TX_TIMEOUT,
+                          IRQ_TX_DONE | IRQ_RX_TX_TIMEOUT,
+                          IRQ_RADIO_NONE,
+                          IRQ_RADIO_NONE );
+  SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
+  // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
+  SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
+  packetParams.Params.Gfsk.PayloadLength = 0x4;
+  SUBGRF_SetPacketParams(&packetParams);
+  SUBGRF_SendPayload((uint8_t *)"PONG", 4, 0);
+}
+
+
+/**
+  * @brief  Transition actions executed on every RX Done event (helper function)
+  * @param  fsm pointer to FSM context
+  * @retval None
+  */
+void transitionRxDone(pingPongFSM_t *const fsm)
+{
+  PacketStatus_t packetStatus;
+  int32_t cfo;
+  char uartBuff[50];
+
+  // Workaround 15.3 in DS.SX1261-2.W.APP (because following RX w/ timeout sequence)
+  SUBGRF_WriteRegister(0x0920, 0x00);
+  SUBGRF_WriteRegister(0x0944, (SUBGRF_ReadRegister(0x0944) | 0x02));
+
+  SUBGRF_GetPayload((uint8_t *)fsm->rxBuffer, &fsm->rxSize, 0xFF);
+  SUBGRF_GetPacketStatus(&packetStatus);
+  SUBGRF_GetCFO(FSK_DATARATE, &cfo);
+
+  sprintf(uartBuff, "RssiValue=%d dBm, Cfo=%ld Hz\r\n", packetStatus.Params.Gfsk.RssiAvg, cfo);
+  HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
+}
 
 /* USER CODE END 4 */
 
@@ -506,7 +717,8 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-#ifdef USE_FULL_ASSERT
+
+#ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
@@ -522,3 +734,5 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+
+/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

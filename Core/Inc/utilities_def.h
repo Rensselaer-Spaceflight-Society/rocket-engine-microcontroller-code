@@ -74,7 +74,7 @@ typedef enum
   */
 typedef enum
 {
-  CFG_SEQ_Task_SubGHz_Phy_App_Process,
+  CFG_SEQ_Task_Default,
   /* USER CODE BEGIN CFG_SEQ_Task_Id_t */
 
   /* USER CODE END CFG_SEQ_Task_Id_t */
