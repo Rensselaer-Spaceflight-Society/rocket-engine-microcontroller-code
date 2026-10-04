@@ -10,6 +10,9 @@
 #include "radio_driver.h"
 #include "usart.h"
 
+#include <string.h>
+
+
 #define RF_FREQUENCY                                433000000 /* Hz */
 #define TX_OUTPUT_POWER                             14        /* dBm */
 #define FSK_FDEV                                    25000     /* Hz */
@@ -20,7 +23,16 @@
 //#define FSK_FIX_LENGTH_PAYLOAD_ON                   false
 //#define PAYLOAD_LEN                                 64
 
+#define PACKET_START (0b111110 << 2)
+#define PACKET_START_LEN 8
 
+
+typedef enum {
+	CONTROL_BOARD = 0,
+	FILL_CONTROL = 1,
+	DAQ_CONTROL = 2,
+	RESERVED = 3
+} board;
 
 typedef enum
 {
@@ -64,5 +76,6 @@ void enterSlaveRx(pingPongFSM_t *const fsm);
 void enterMasterTx(pingPongFSM_t *const fsm);
 void enterSlaveTx(pingPongFSM_t *const fsm);
 void transitionRxDone(pingPongFSM_t *const fsm);
+int packetize(board dest, char* message, int msgLen);
 
 #endif /* INC_RADIO_H_ */

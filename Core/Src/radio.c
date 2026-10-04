@@ -349,6 +349,7 @@ void enterSlaveRx(pingPongFSM_t *const fsm)
   */
 void enterMasterTx(pingPongFSM_t *const fsm)
 {
+  char* message = "PONG";
   HAL_Delay(fsm->rxMargin);
 
   HAL_UART_Transmit(&huart2, (uint8_t *)"...PING\r\n", 9, HAL_MAX_DELAY);
@@ -360,9 +361,9 @@ void enterMasterTx(pingPongFSM_t *const fsm)
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
   // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
   SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
-  packetParams.Params.Gfsk.PayloadLength = 0x4;
+  packetParams.Params.Gfsk.PayloadLength = packetize(CONTROL_BOARD, message, 4);
   SUBGRF_SetPacketParams(&packetParams);
-  SUBGRF_SendPayload((uint8_t *)"PING", 4, 0);
+  SUBGRF_SendPayload((uint8_t *)message, packetParams.Params.Gfsk.PayloadLength, 0);
 }
 
 
@@ -373,6 +374,7 @@ void enterMasterTx(pingPongFSM_t *const fsm)
   */
 void enterSlaveTx(pingPongFSM_t *const fsm)
 {
+  char* message = "PONG";
   HAL_Delay(fsm->rxMargin);
 
   HAL_UART_Transmit(&huart2, (uint8_t *)"...PONG\r\n", 9, HAL_MAX_DELAY);
@@ -384,9 +386,9 @@ void enterSlaveTx(pingPongFSM_t *const fsm)
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
   // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
   SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
-  packetParams.Params.Gfsk.PayloadLength = 0x4;
+  packetParams.Params.Gfsk.PayloadLength = packetize(CONTROL_BOARD, message, 4);
   SUBGRF_SetPacketParams(&packetParams);
-  SUBGRF_SendPayload((uint8_t *)"PONG", 4, 0);
+  SUBGRF_SendPayload((uint8_t *)message, packetParams.Params.Gfsk.PayloadLength, 0);
 }
 
 
@@ -412,3 +414,12 @@ void transitionRxDone(pingPongFSM_t *const fsm)
   sprintf(uartBuff, "RssiValue=%d dBm, Cfo=%ld Hz\r\n", packetStatus.Params.Gfsk.RssiAvg, cfo);
   HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
 }
+
+
+
+int packetize(board dest, char* message, int msgLen) {
+	memmove(message+1, message, msgLen + 1);
+	message[0] = (char) (PACKET_START + dest);
+	return msgLen + 8;
+}
+
