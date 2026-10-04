@@ -1,0 +1,48 @@
+!SESSION 2026-09-27 14:44:27.707 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Command-line arguments:  -os linux -ws gtk -arch x86_64 -data /home/samsonk/Documents/rocket-engine-microcontroller-code
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-09-27 14:44:33.391
+!MESSAGE Log4j2 initialized with config file /home/samsonk/Documents/rocket-engine-microcontroller-code/.metadata/.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-09-27 14:44:35.748
+!MESSAGE Started RMI Server, listening on port 41337
+!SESSION 2026-09-27 16:59:07.465 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Command-line arguments:  -os linux -ws gtk -arch x86_64 -data /home/samsonk/Documents/rocket-engine-microcontroller-code
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-09-27 16:59:09.115
+!MESSAGE Log4j2 initialized with config file /home/samsonk/Documents/rocket-engine-microcontroller-code/.metadata/.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-09-27 16:59:10.636
+!MESSAGE Started RMI Server, listening on port 41337
+!SESSION 2026-10-02 17:09:24.965 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Command-line arguments:  -os linux -ws gtk -arch x86_64 -data /home/samsonk/Documents/rocket-engine-microcontroller-code
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-10-02 17:09:29.555
+!MESSAGE Log4j2 initialized with config file /home/samsonk/Documents/rocket-engine-microcontroller-code/.metadata/.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-10-02 17:09:32.964
+!MESSAGE Started RMI Server, listening on port 41337
+!SESSION 2026-10-02 17:19:49.950 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Command-line arguments:  -os linux -ws gtk -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-10-02 17:19:54.701
+!MESSAGE Log4j2 initialized with config file /home/samsonk/Documents/rocket-engine-microcontroller-code/.metadata/.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-10-02 17:19:57.852
+!MESSAGE Started RMI Server, listening on port 41337
