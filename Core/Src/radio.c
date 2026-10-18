@@ -32,7 +32,8 @@ void radioInit(void)
 
   ModulationParams_t modulationParams;
   modulationParams.PacketType = PACKET_TYPE_GFSK;
-  modulationParams.Params.Gfsk.Bandwidth = SUBGRF_GetFskBandwidthRegValue(FSK_BANDWIDTH);
+//  modulationParams.Params.Gfsk.Bandwidth = SUBGRF_GetFskBandwidthRegValue(FSK_BANDWIDTH); We just use the register directly
+  modulationParams.Params.Gfsk.Bandwidth = RX_BW_234300;
   modulationParams.Params.Gfsk.BitRate = FSK_DATARATE;
   modulationParams.Params.Gfsk.Fdev = FSK_FDEV;
   modulationParams.Params.Gfsk.ModulationShaping = MOD_SHAPING_G_BT_1;
@@ -45,11 +46,11 @@ void radioInit(void)
   packetParams.Params.Gfsk.HeaderType = RADIO_PACKET_VARIABLE_LENGTH;
   packetParams.Params.Gfsk.PayloadLength = 0xFF;
   packetParams.Params.Gfsk.PreambleLength = (FSK_PREAMBLE_LENGTH << 3); // bytes to bits
-  packetParams.Params.Gfsk.PreambleMinDetect = RADIO_PREAMBLE_DETECTOR_08_BITS;
+  packetParams.Params.Gfsk.PreambleMinDetect = RADIO_PREAMBLE_DETECTOR_08_BITS; // 8 bits of preamble to look for syncword.
   packetParams.Params.Gfsk.SyncWordLength = (FSK_SYNCWORD_LENGTH << 3); // bytes to bits
   SUBGRF_SetPacketParams(&packetParams);
 
-  SUBGRF_SetSyncWord((uint8_t[]){0xC1, 0x94, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00});
+  SUBGRF_SetSyncWord(CALLSIGN);
   SUBGRF_SetWhiteningSeed(0x01FF);
 }
 
@@ -156,6 +157,7 @@ void eventRxDone(pingPongFSM_t *const fsm)
           else
           {
             enterMasterRx(fsm);
+            HAL_UART_Transmit(&huart2, (uint8_t *)fsm->rxBuffer, strlen(fsm->rxBuffer), HAL_MAX_DELAY);
           }
           break;
         default:
@@ -349,7 +351,6 @@ void enterSlaveRx(pingPongFSM_t *const fsm)
   */
 void enterMasterTx(pingPongFSM_t *const fsm)
 {
-  char* message = "PONG";
   HAL_Delay(fsm->rxMargin);
 
   HAL_UART_Transmit(&huart2, (uint8_t *)"...PING\r\n", 9, HAL_MAX_DELAY);
@@ -361,9 +362,9 @@ void enterMasterTx(pingPongFSM_t *const fsm)
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
   // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
   SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
-  packetParams.Params.Gfsk.PayloadLength = packetize(CONTROL_BOARD, message, 4);
+  packetParams.Params.Gfsk.PayloadLength = 0x4;
   SUBGRF_SetPacketParams(&packetParams);
-  SUBGRF_SendPayload((uint8_t *)message, packetParams.Params.Gfsk.PayloadLength, 0);
+  SUBGRF_SendPayload((uint8_t *)"PING", packetParams.Params.Gfsk.PayloadLength, 0);
 }
 
 
@@ -374,7 +375,6 @@ void enterMasterTx(pingPongFSM_t *const fsm)
   */
 void enterSlaveTx(pingPongFSM_t *const fsm)
 {
-  char* message = "PONG";
   HAL_Delay(fsm->rxMargin);
 
   HAL_UART_Transmit(&huart2, (uint8_t *)"...PONG\r\n", 9, HAL_MAX_DELAY);
@@ -386,9 +386,9 @@ void enterSlaveTx(pingPongFSM_t *const fsm)
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
   // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
   SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
-  packetParams.Params.Gfsk.PayloadLength = packetize(CONTROL_BOARD, message, 4);
+  packetParams.Params.Gfsk.PayloadLength = 0x4;
   SUBGRF_SetPacketParams(&packetParams);
-  SUBGRF_SendPayload((uint8_t *)message, packetParams.Params.Gfsk.PayloadLength, 0);
+  SUBGRF_SendPayload((uint8_t *)"PONG", packetParams.Params.Gfsk.PayloadLength, 0);
 }
 
 
