@@ -80,4 +80,6 @@ void enterMasterTx(pingPongFSM_t *const fsm);
 void enterSlaveTx(pingPongFSM_t *const fsm);
 void transitionRxDone(pingPongFSM_t *const fsm);
 
+void setNodeAddress(uint8_t node_address);
+void setBroadcastAddress(uint8_t broadcast_address);
 #endif /* INC_RADIO_H_ */

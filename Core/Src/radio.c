@@ -6,6 +6,11 @@
  */
 
 #include "radio.h"
+#include "usart.h"
+
+#ifndef BOARD_ADDR
+#error  "You must provide an address for this board at Compile Time"
+#endif
 
 
 void (*volatile eventReceptor)(pingPongFSM_t *const fsm);
@@ -40,18 +45,21 @@ void radioInit(void)
   SUBGRF_SetModulationParams(&modulationParams);
 
   packetParams.PacketType = PACKET_TYPE_GFSK;
-  packetParams.Params.Gfsk.AddrComp = RADIO_ADDRESSCOMP_FILT_OFF;
+  packetParams.Params.Gfsk.AddrComp = RADIO_ADDRESSCOMP_FILT_NODE;
   packetParams.Params.Gfsk.CrcLength = RADIO_CRC_2_BYTES_CCIT;
   packetParams.Params.Gfsk.DcFree = RADIO_DC_FREEWHITENING;
   packetParams.Params.Gfsk.HeaderType = RADIO_PACKET_VARIABLE_LENGTH;
-  packetParams.Params.Gfsk.PayloadLength = 0xFF;
+  packetParams.Params.Gfsk.PayloadLength = 0xFE;
   packetParams.Params.Gfsk.PreambleLength = (FSK_PREAMBLE_LENGTH << 3); // bytes to bits
   packetParams.Params.Gfsk.PreambleMinDetect = RADIO_PREAMBLE_DETECTOR_08_BITS; // 8 bits of preamble to look for syncword.
   packetParams.Params.Gfsk.SyncWordLength = (FSK_SYNCWORD_LENGTH << 3); // bytes to bits
   SUBGRF_SetPacketParams(&packetParams);
 
   SUBGRF_SetSyncWord(CALLSIGN);
+
   SUBGRF_SetWhiteningSeed(0x01FF);
+  setNodeAddress(BOARD_ADDR);
+//  setBroadcastAddress(0x01);
 }
 
 
@@ -142,14 +150,14 @@ void eventRxDone(pingPongFSM_t *const fsm)
       {
         case SSTATE_RX:
           transitionRxDone(fsm);
-          if (strncmp(fsm->rxBuffer, "PONG", 4) == 0)
+          if (strncmp(&fsm->rxBuffer[1], "PONG", 4) == 0)
           {
             BSP_LED_Off(LED_GREEN);
             BSP_LED_Toggle(LED_RED);
             enterMasterTx(fsm);
             fsm->subState = SSTATE_TX;
           }
-          else if (strncmp(fsm->rxBuffer, "PING", 4) == 0)
+          else if (strncmp(&fsm->rxBuffer[1], "PING", 4) == 0)
           {
             enterSlaveRx(fsm);
             fsm->state = STATE_SLAVE;
@@ -169,7 +177,7 @@ void eventRxDone(pingPongFSM_t *const fsm)
       {
         case SSTATE_RX:
           transitionRxDone(fsm);
-          if (strncmp(fsm->rxBuffer, "PING", 4) == 0)
+          if (strncmp(&fsm->rxBuffer[1], "PING", 4) == 0)
           {
             BSP_LED_Off(LED_RED);
             BSP_LED_Toggle(LED_GREEN);
@@ -319,7 +327,7 @@ void enterMasterRx(pingPongFSM_t *const fsm)
                           IRQ_RADIO_NONE,
                           IRQ_RADIO_NONE );
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
-  packetParams.Params.Gfsk.PayloadLength = 0xFF;
+  packetParams.Params.Gfsk.PayloadLength = 0xFE;
   SUBGRF_SetPacketParams(&packetParams);
   SUBGRF_SetRx(fsm->rxTimeout << 6);
 }
@@ -338,7 +346,7 @@ void enterSlaveRx(pingPongFSM_t *const fsm)
                           IRQ_RADIO_NONE,
                           IRQ_RADIO_NONE );
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
-  packetParams.Params.Gfsk.PayloadLength = 0xFF;
+  packetParams.Params.Gfsk.PayloadLength = 0xFE;
   SUBGRF_SetPacketParams(&packetParams);
   SUBGRF_SetRx(fsm->rxTimeout << 6);
 }
@@ -362,9 +370,10 @@ void enterMasterTx(pingPongFSM_t *const fsm)
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
   // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
   SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
-  packetParams.Params.Gfsk.PayloadLength = 0x4;
+  packetParams.Params.Gfsk.PayloadLength = 0x5;
   SUBGRF_SetPacketParams(&packetParams);
-  SUBGRF_SendPayload((uint8_t *)"PING", packetParams.Params.Gfsk.PayloadLength, 0);
+  uint8_t packet[] = { 0x00, 'P', 'I', 'N', 'G' };
+  SUBGRF_SendPayload(packet, packetParams.Params.Gfsk.PayloadLength, 0);
 }
 
 
@@ -386,9 +395,11 @@ void enterSlaveTx(pingPongFSM_t *const fsm)
   SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
   // Workaround 5.1 in DS.SX1261-2.W.APP (before each packet transmission)
   SUBGRF_WriteRegister(0x0889, (SUBGRF_ReadRegister(0x0889) | 0x04));
-  packetParams.Params.Gfsk.PayloadLength = 0x4;
+  packetParams.Params.Gfsk.PayloadLength = 0x5;
   SUBGRF_SetPacketParams(&packetParams);
-  SUBGRF_SendPayload((uint8_t *)"PONG", packetParams.Params.Gfsk.PayloadLength, 0);
+
+  uint8_t packet[] = { 0x00, 'P', 'O', 'N', 'G' };
+  SUBGRF_SendPayload(packet, packetParams.Params.Gfsk.PayloadLength, 0);
 }
 
 
@@ -407,7 +418,7 @@ void transitionRxDone(pingPongFSM_t *const fsm)
   SUBGRF_WriteRegister(0x0920, 0x00);
   SUBGRF_WriteRegister(0x0944, (SUBGRF_ReadRegister(0x0944) | 0x02));
 
-  SUBGRF_GetPayload((uint8_t *)fsm->rxBuffer, &fsm->rxSize, 0xFF);
+  SUBGRF_GetPayload((uint8_t *)fsm->rxBuffer, &fsm->rxSize, 0xFE);
   SUBGRF_GetPacketStatus(&packetStatus);
   SUBGRF_GetCFO(FSK_DATARATE, &cfo);
 
@@ -415,11 +426,6 @@ void transitionRxDone(pingPongFSM_t *const fsm)
   HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
 }
 
-
-
-int packetize(board dest, char* message, int msgLen) {
-	memmove(message+1, message, msgLen + 1);
-	message[0] = (char) (PACKET_START + dest);
-	return msgLen + 8;
+void setNodeAddress(uint8_t node_address) {
+    SUBGRF_WriteRegisters(SUBGHZ_GNODEADDR, &node_address, 1 );
 }
-

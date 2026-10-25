@@ -192,6 +192,7 @@ int main(void)
   fsm.state = STATE_MASTER;
   fsm.subState = SSTATE_RX;
 
+
   while (1)
   {
     /* USER CODE END WHILE */
