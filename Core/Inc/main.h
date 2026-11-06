@@ -52,11 +52,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
-
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
-void MX_SUBGHZ_Init(void);
 
 /* USER CODE BEGIN EFP */
 
@@ -69,6 +66,8 @@ void MX_SUBGHZ_Init(void);
 #define RCC_OSC32_OUT_GPIO_Port GPIOC
 #define FE_CTRL3_Pin GPIO_PIN_3
 #define FE_CTRL3_GPIO_Port GPIOC
+#define FE_CTRL2_Pin GPIO_PIN_5
+#define FE_CTRL2_GPIO_Port GPIOC
 #define FE_CTRL1_Pin GPIO_PIN_4
 #define FE_CTRL1_GPIO_Port GPIOC
 
